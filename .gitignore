@@ -1,4 +1,10 @@
 cache/*
+posters/*
+archives/*
+*.png
+*.pdf
+*.svg
+benchmark_results.txt
 
 # Virtual environments
 env/

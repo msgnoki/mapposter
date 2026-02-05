@@ -1,0 +1,679 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Map Poster Generator</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+            overflow: hidden;
+        }
+
+        #map {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 1;
+        }
+
+        /* Cadre fixe au centre */
+        #frame-overlay {
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            border: 3px solid #e74c3c;
+            box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.3);
+            pointer-events: none;
+            z-index: 400;
+            transition: all 0.3s ease;
+        }
+
+        /* Panneau latéral */
+        #sidebar {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 380px;
+            height: 100%;
+            background: white;
+            box-shadow: 4px 0 16px rgba(0, 0, 0, 0.15);
+            z-index: 1000;
+            overflow-y: auto;
+            transition: transform 0.3s ease;
+        }
+
+        #sidebar.collapsed {
+            transform: translateX(-340px);
+        }
+
+        #sidebar-toggle {
+            position: absolute;
+            right: -40px;
+            top: 20px;
+            width: 40px;
+            height: 40px;
+            background: white;
+            border: none;
+            border-radius: 0 8px 8px 0;
+            box-shadow: 2px 0 8px rgba(0, 0, 0, 0.15);
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 20px;
+        }
+
+        .sidebar-header {
+            padding: 24px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+        }
+
+        .sidebar-header h1 {
+            font-size: 20px;
+            font-weight: 600;
+            margin-bottom: 8px;
+        }
+
+        .sidebar-header p {
+            font-size: 13px;
+            opacity: 0.9;
+        }
+
+        .sidebar-section {
+            padding: 20px 24px;
+            border-bottom: 1px solid #e0e0e0;
+        }
+
+        .sidebar-section h3 {
+            font-size: 13px;
+            font-weight: 600;
+            text-transform: uppercase;
+            color: #666;
+            margin-bottom: 12px;
+            letter-spacing: 0.5px;
+        }
+
+        .location-info {
+            background: #f5f5f5;
+            padding: 12px;
+            border-radius: 8px;
+            font-size: 14px;
+        }
+
+        .location-info strong {
+            display: block;
+            font-size: 16px;
+            margin-bottom: 4px;
+            color: #333;
+        }
+
+        /* Thèmes */
+        .theme-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 8px;
+            max-height: 300px;
+            overflow-y: auto;
+        }
+
+        .theme-checkbox {
+            display: flex;
+            align-items: center;
+            padding: 8px;
+            border: 1px solid #ddd;
+            border-radius: 6px;
+            cursor: pointer;
+            transition: all 0.2s;
+            font-size: 13px;
+        }
+
+        .theme-checkbox:hover {
+            background: #f5f5f5;
+            border-color: #667eea;
+        }
+
+        .theme-checkbox input[type="checkbox"] {
+            margin-right: 8px;
+        }
+
+        .select-all-themes {
+            margin-bottom: 12px;
+            padding: 10px;
+            background: #f8f9fa;
+            border-radius: 6px;
+            display: flex;
+            align-items: center;
+            font-size: 13px;
+            font-weight: 500;
+            cursor: pointer;
+        }
+
+        .select-all-themes input {
+            margin-right: 8px;
+        }
+
+        /* Format et orientation */
+        .format-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 8px;
+        }
+
+        .format-btn {
+            padding: 12px;
+            border: 2px solid #ddd;
+            border-radius: 8px;
+            background: white;
+            cursor: pointer;
+            font-size: 13px;
+            font-weight: 500;
+            transition: all 0.2s;
+            text-align: left;
+        }
+
+        .format-btn:hover {
+            border-color: #667eea;
+            background: #f5f5ff;
+        }
+
+        .format-btn.active {
+            border-color: #667eea;
+            background: #667eea;
+            color: white;
+        }
+
+        .orientation-toggle {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 8px;
+            margin-top: 12px;
+        }
+
+        /* Contrôles */
+        .control-group {
+            margin-bottom: 16px;
+        }
+
+        .control-group label {
+            display: block;
+            font-size: 13px;
+            font-weight: 500;
+            margin-bottom: 6px;
+            color: #555;
+        }
+
+        .control-group select,
+        .control-group input[type="number"],
+        .control-group input[type="text"] {
+            width: 100%;
+            padding: 10px;
+            border: 1px solid #ddd;
+            border-radius: 6px;
+            font-size: 14px;
+        }
+
+        .control-group input[type="text"]:focus,
+        .control-group select:focus {
+            outline: none;
+            border-color: #667eea;
+            box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+        }
+
+        /* Bouton de génération */
+        .generate-btn {
+            width: 100%;
+            padding: 16px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            border-radius: 8px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+
+        .generate-btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 16px rgba(102, 126, 234, 0.4);
+        }
+
+        .generate-btn:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        .generate-btn.loading {
+            background: #999;
+        }
+
+        /* Messages */
+        .message {
+            margin-top: 12px;
+            padding: 12px;
+            border-radius: 6px;
+            font-size: 13px;
+            display: none;
+        }
+
+        .message.success {
+            background: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+        }
+
+        .message.error {
+            background: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+        }
+
+        /* Info carte */
+        .map-info {
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            background: white;
+            padding: 12px 16px;
+            border-radius: 8px;
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+            z-index: 500;
+            font-size: 13px;
+        }
+
+        .map-info div {
+            margin: 4px 0;
+        }
+
+        /* Scrollbar personnalisée */
+        ::-webkit-scrollbar {
+            width: 8px;
+        }
+
+        ::-webkit-scrollbar-track {
+            background: #f1f1f1;
+        }
+
+        ::-webkit-scrollbar-thumb {
+            background: #888;
+            border-radius: 4px;
+        }
+
+        ::-webkit-scrollbar-thumb:hover {
+            background: #555;
+        }
+    </style>
+</head>
+<body>
+    <!-- Carte -->
+    <div id="map"></div>
+
+    <!-- Cadre fixe -->
+    <div id="frame-overlay"></div>
+
+    <!-- Info carte -->
+    <div class="map-info">
+        <div><strong>Zone sélectionnée</strong></div>
+        <div id="map-center">Centre: 43.4255, 6.7694</div>
+        <div id="map-distance">Distance: 12000m</div>
+    </div>
+
+    <!-- Panneau latéral -->
+    <div id="sidebar">
+        <button id="sidebar-toggle">◀</button>
+
+        <div class="sidebar-header">
+            <h1>🗺️ Map Poster Generator</h1>
+            <p>Sélectionnez une zone et personnalisez votre poster</p>
+        </div>
+
+        <!-- Localisation -->
+        <div class="sidebar-section">
+            <h3>📍 Localisation</h3>
+            <div class="control-group">
+                <label>Nom de la ville</label>
+                <input type="text" id="location-city" value="Saint-Raphaël"
+                       placeholder="Nom de la ville">
+            </div>
+            <div class="control-group">
+                <label>Label pays (affiché sur le poster)</label>
+                <input type="text" id="location-country" value="French Riviera"
+                       placeholder="ex: French Riviera, France, etc.">
+            </div>
+        </div>
+
+        <!-- Thèmes -->
+        <div class="sidebar-section">
+            <h3>🎨 Thèmes</h3>
+            <div class="select-all-themes">
+                <input type="checkbox" id="select-all" checked onchange="toggleAllThemes()">
+                <label for="select-all" style="cursor: pointer;">Tout sélectionner</label>
+            </div>
+            <div class="theme-grid">
+                {% for theme in themes %}
+                <label class="theme-checkbox">
+                    <input type="checkbox" name="theme" value="{{ theme }}" checked>
+                    <span>{{ theme }}</span>
+                </label>
+                {% endfor %}
+            </div>
+        </div>
+
+        <!-- Format -->
+        <div class="sidebar-section">
+            <h3>📐 Format</h3>
+            <div class="format-grid">
+                {% for key, preset in format_presets.items() %}
+                <button class="format-btn {% if key == 'A3' %}active{% endif %}"
+                        data-format="{{ key }}"
+                        data-width="{{ preset.width }}"
+                        data-height="{{ preset.height }}"
+                        onclick="selectFormat('{{ key }}', {{ preset.width }}, {{ preset.height }})">
+                    <div style="font-weight: 600;">{{ key.upper() }}</div>
+                    <div style="font-size: 11px; opacity: 0.7; margin-top: 2px;">
+                        {{ "%.1f"|format(preset.width) }} × {{ "%.1f"|format(preset.height) }}"
+                    </div>
+                </button>
+                {% endfor %}
+            </div>
+
+            <!-- Orientation -->
+            <div class="orientation-toggle">
+                <button class="format-btn active" onclick="setOrientation('portrait')">
+                    📄 Portrait
+                </button>
+                <button class="format-btn" onclick="setOrientation('landscape')">
+                    📃 Paysage
+                </button>
+            </div>
+        </div>
+
+        <!-- Configuration -->
+        <div class="sidebar-section">
+            <h3>⚙️ Configuration</h3>
+
+            <div class="control-group">
+                <label>Format de sortie</label>
+                <select id="output-format">
+                    <option value="pdf">PDF Vectoriel</option>
+                    <option value="png">PNG (Raster)</option>
+                    <option value="svg">SVG (Vectoriel)</option>
+                </select>
+            </div>
+
+            <div class="control-group">
+                <label>Résolution (DPI)</label>
+                <select id="dpi">
+                    <option value="150">150 DPI (Aperçu)</option>
+                    <option value="300" selected>300 DPI (Standard)</option>
+                    <option value="600">600 DPI (Haute qualité)</option>
+                </select>
+            </div>
+        </div>
+
+        <!-- Génération -->
+        <div class="sidebar-section">
+            <button class="generate-btn" onclick="generatePosters()">
+                🚀 Générer les posters
+            </button>
+            <div class="message" id="message"></div>
+        </div>
+    </div>
+
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script>
+        // État global
+        let map;
+        let currentFormat = { width: 11.7, height: 16.5 };
+        let currentOrientation = 'portrait';
+        let currentLocation = { lat: 43.4255303, lng: 6.7694244, city: 'Saint-Raphaël', country: 'France' };
+
+        // Initialiser la carte
+        function initMap() {
+            map = L.map('map').setView([currentLocation.lat, currentLocation.lng], 13);
+
+            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+                attribution: '© OpenStreetMap contributors',
+                maxZoom: 19
+            }).addTo(map);
+
+            // Mettre à jour le cadre quand la carte bouge
+            map.on('move', updateFrame);
+            map.on('zoom', updateFrame);
+            map.on('moveend', updateLocation);
+
+            updateFrame();
+        }
+
+        // Mettre à jour le cadre fixe
+        function updateFrame() {
+            const frame = document.getElementById('frame-overlay');
+            const mapSize = map.getSize();
+
+            // Calculer la taille du cadre en pixels basé sur le ratio du format
+            const ratio = currentOrientation === 'portrait'
+                ? currentFormat.height / currentFormat.width
+                : currentFormat.width / currentFormat.height;
+
+            let frameWidth, frameHeight;
+
+            // Prendre 60% de la taille de la carte
+            if (currentOrientation === 'portrait') {
+                frameWidth = Math.min(mapSize.x * 0.3, 300);
+                frameHeight = frameWidth * ratio;
+            } else {
+                frameHeight = Math.min(mapSize.y * 0.4, 250);
+                frameWidth = frameHeight * ratio;
+            }
+
+            frame.style.width = frameWidth + 'px';
+            frame.style.height = frameHeight + 'px';
+
+            // Mettre à jour les infos
+            updateMapInfo();
+        }
+
+        // Calculer les bounds réels du cadre
+        function getFrameBounds() {
+            const frame = document.getElementById('frame-overlay');
+            const frameRect = frame.getBoundingClientRect();
+            const mapContainer = document.getElementById('map');
+            const mapRect = mapContainer.getBoundingClientRect();
+
+            // Convertir les pixels du cadre en coordonnées map
+            const frameCenter = {
+                x: mapRect.width / 2,
+                y: mapRect.height / 2
+            };
+
+            const frameHalfWidth = frameRect.width / 2;
+            const frameHalfHeight = frameRect.height / 2;
+
+            // Points du cadre
+            const topLeft = map.containerPointToLatLng([frameCenter.x - frameHalfWidth, frameCenter.y - frameHalfHeight]);
+            const topRight = map.containerPointToLatLng([frameCenter.x + frameHalfWidth, frameCenter.y - frameHalfHeight]);
+            const bottomLeft = map.containerPointToLatLng([frameCenter.x - frameHalfWidth, frameCenter.y + frameHalfHeight]);
+            const center = map.getCenter();
+
+            // Calculer les distances depuis le centre
+            const distNS = map.distance(center, [topLeft.lat, center.lng]);
+            const distEW = map.distance(center, [center.lat, topRight.lng]);
+
+            // create_poster utilise dist comme la PLUS GRANDE dimension
+            // Portrait: hauteur > largeur → utiliser distNS
+            // Landscape: largeur > hauteur → utiliser distEW
+            const distance = currentOrientation === 'portrait'
+                ? Math.round(distNS)  // Portrait: rayon vertical
+                : Math.round(distEW); // Landscape: rayon horizontal
+
+            return { distance, bounds: { topLeft, topRight, bottomLeft, center } };
+        }
+
+        // Mettre à jour les informations de la carte
+        function updateMapInfo() {
+            const center = map.getCenter();
+            const frameBounds = getFrameBounds();
+
+            document.getElementById('map-center').textContent =
+                `Centre: ${center.lat.toFixed(4)}, ${center.lng.toFixed(4)}`;
+            document.getElementById('map-distance').textContent =
+                `Rayon: ${frameBounds.distance}m`;
+        }
+
+        // Reverse geocoding pour obtenir le lieu
+        async function updateLocation() {
+            const center = map.getCenter();
+
+            try {
+                const response = await fetch('/api/geocode', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ lat: center.lat, lng: center.lng })
+                });
+
+                if (response.ok) {
+                    const data = await response.json();
+                    currentLocation = {
+                        lat: center.lat,
+                        lng: center.lng,
+                        city: data.city,
+                        country: data.country
+                    };
+
+                    // Mettre à jour les champs input
+                    document.getElementById('location-city').value = data.city;
+                    document.getElementById('location-country').value = data.country;
+                }
+            } catch (error) {
+                console.error('Geocoding error:', error);
+            }
+        }
+
+        // Sélectionner un format
+        function selectFormat(format, width, height) {
+            document.querySelectorAll('.format-btn[data-format]').forEach(btn => {
+                btn.classList.remove('active');
+            });
+            document.querySelector(`[data-format="${format}"]`).classList.add('active');
+
+            currentFormat = { width, height };
+            updateFrame();
+        }
+
+        // Changer l'orientation
+        function setOrientation(orientation) {
+            document.querySelectorAll('.orientation-toggle .format-btn').forEach(btn => {
+                btn.classList.remove('active');
+            });
+            event.target.classList.add('active');
+
+            currentOrientation = orientation;
+            updateFrame();
+        }
+
+        // Tout sélectionner/désélectionner
+        function toggleAllThemes() {
+            const selectAll = document.getElementById('select-all');
+            const checkboxes = document.querySelectorAll('input[name="theme"]');
+            checkboxes.forEach(cb => cb.checked = selectAll.checked);
+        }
+
+        // Toggle sidebar
+        document.getElementById('sidebar-toggle').addEventListener('click', function() {
+            const sidebar = document.getElementById('sidebar');
+            sidebar.classList.toggle('collapsed');
+            this.textContent = sidebar.classList.contains('collapsed') ? '▶' : '◀';
+        });
+
+        // Générer les posters
+        async function generatePosters() {
+            const btn = document.querySelector('.generate-btn');
+            const message = document.getElementById('message');
+
+            // Vérifier qu'au moins un thème est sélectionné
+            const selectedThemes = Array.from(document.querySelectorAll('input[name="theme"]:checked'))
+                .map(cb => cb.value);
+
+            if (selectedThemes.length === 0) {
+                showMessage('Veuillez sélectionner au moins un thème', 'error');
+                return;
+            }
+
+            btn.disabled = true;
+            btn.classList.add('loading');
+            btn.textContent = `⏳ Génération ${selectedThemes.length} poster(s)...`;
+            showMessage(`⏳ Génération en cours (${selectedThemes.length} thèmes). Voir progression dans le terminal Flask!`, 'success');
+            message.style.display = 'block';
+
+            try {
+                const center = map.getCenter();
+                const frameBounds = getFrameBounds();
+
+                // Récupérer les valeurs des champs
+                const cityValue = document.getElementById('location-city').value || currentLocation.city;
+                const countryValue = document.getElementById('location-country').value || currentLocation.country;
+
+                const data = {
+                    city: cityValue,
+                    country: 'France', // Pour le géocodage
+                    lat: center.lat,
+                    lng: center.lng,
+                    distance: frameBounds.distance, // Distance calculée depuis le cadre
+                    themes: selectedThemes,
+                    format_preset: document.querySelector('.format-btn.active[data-format]')?.dataset.format || 'A3',
+                    orientation: currentOrientation,
+                    output_format: document.getElementById('output-format').value,
+                    dpi: document.getElementById('dpi').value,
+                    country_label: countryValue
+                };
+
+                const response = await fetch('/api/generate', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(data)
+                });
+
+                const result = await response.json();
+
+                if (result.success) {
+                    showMessage(`✅ ${result.message}`, 'success');
+                } else {
+                    showMessage(`❌ Erreur: ${result.error}`, 'error');
+                }
+            } catch (error) {
+                showMessage(`❌ Erreur: ${error.message}`, 'error');
+            } finally {
+                btn.disabled = false;
+                btn.classList.remove('loading');
+                btn.textContent = '🚀 Générer les posters';
+            }
+        }
+
+        function showMessage(text, type) {
+            const message = document.getElementById('message');
+            message.textContent = text;
+            message.className = `message ${type}`;
+            message.style.display = 'block';
+        }
+
+        // Initialiser au chargement
+        window.addEventListener('load', function() {
+            initMap();
+            updateLocation();
+        });
+    </script>
+</body>
+</html>

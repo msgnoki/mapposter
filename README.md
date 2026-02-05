@@ -43,7 +43,45 @@ source .venv/bin/activate  # On Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
-## Usage
+## 🌐 Web Interface (NEW!)
+
+**Interactive web application with WYSIWYG zone selection.**
+
+### Quick Start
+
+```bash
+# Activate virtual environment
+source .venv/bin/activate  # or: uv sync
+
+# Start Flask server
+cd web_interface
+python app.py
+```
+
+Then open **http://localhost:5000** in your browser.
+
+### Features
+
+- 🗺️ **WYSIWYG Selection**: Fixed frame showing exact poster area
+- 📍 **Auto-Detection**: Automatic city/country detection via reverse geocoding
+- 🎨 **Multi-Themes**: Select multiple themes, generate batch
+- 📐 **Format Presets**: A3, A4, A5, Ultrawide (3440×1440), Square, Poster
+- 🔄 **Real-time Preview**: Frame adapts to format & orientation
+- ⚡ **Optimized**: Cache system for fast generation after first poster
+
+### Documentation
+
+- 📘 [Backend Specs](web_interface/BACKEND.md) - Flask API, OSM data pipeline
+- 📗 [Frontend Specs](web_interface/FRONTEND.md) - Leaflet, WYSIWYG calculations
+- 📙 [Functional Specs](web_interface/SPECS_FONCTIONNELLES.md) - Features, user flows, personas
+
+### Screenshots
+
+*Interface with interactive map and collapsible sidebar showing all 17 themes*
+
+---
+
+## Usage (CLI)
 
 ### Generate Poster
 
@@ -396,3 +434,60 @@ G = ox.graph_from_point(point, dist=dist, network_type='walk')   # pedestrian
 - Cache coordinates locally to avoid Nominatim rate limits
 - Use `network_type='drive'` instead of `'all'` for faster renders
 - Reduce `dpi` from 300 to 150 for quick previews
+
+**📊 See [PERFORMANCE.md](PERFORMANCE.md) for detailed benchmarks and optimization guide**
+
+---
+
+## 📚 Complete Documentation
+
+### User Documentation
+- **[README.md](README.md)** - This file - installation, CLI usage, examples
+- **[PERFORMANCE.md](PERFORMANCE.md)** - Performance benchmarks, optimization modes
+
+### Web Interface
+- **[Backend Specs](web_interface/BACKEND.md)** - Flask API, OSM pipeline, caching
+- **[Frontend Specs](web_interface/FRONTEND.md)** - Leaflet integration, WYSIWYG system
+- **[Functional Specs](web_interface/SPECS_FONCTIONNELLES.md)** - Features, user flows, roadmap
+
+### Developer Documentation
+- **[CLAUDE.md](CLAUDE.md)** - Architecture overview for AI assistants
+- **[CONTRIBUTING.md](CONTRIBUTORS.md)** - Contribution guidelines (if exists)
+
+---
+
+## 🤝 Contributing
+
+Contributions welcome! See open issues or create a new one.
+
+### Development Setup
+
+```bash
+# Clone repository
+git clone https://github.com/msgnoki/mapposter.git
+cd mapposter
+
+# Install dependencies
+uv sync --locked
+
+# Run tests
+pytest
+
+# Start web interface
+cd web_interface && python app.py
+```
+
+---
+
+## 📝 License
+
+MIT License - see LICENSE file for details
+
+---
+
+## 🙏 Acknowledgments
+
+- **OpenStreetMap** contributors for map data
+- **OSMnx** by Geoff Boeing for Python OSM interface
+- **Leaflet.js** for interactive maps
+- **Google Fonts** for typography
