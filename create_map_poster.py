@@ -530,7 +530,7 @@ def create_poster(
 
     # Progress bar for data fetching
     with tqdm(
-        total=4,
+        total=3,
         desc="Fetching map data",
         unit="step",
         bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt}",
@@ -543,29 +543,18 @@ def create_poster(
             raise RuntimeError("Failed to retrieve street network data.")
         pbar.update(1)
 
-        # 2. Fetch Marine Water (mer, océan, baies, détroits)
-        pbar.set_description("Downloading marine water")
-        marine_water = fetch_features(
+        # 2. Fetch Water (mer, océan, rivières, lacs)
+        pbar.set_description("Downloading water features")
+        water_features = fetch_features(
             point,
             compensated_dist,
             tags={
-                "natural": ["bay", "strait"],
-                "place": ["sea", "ocean"]
+                "natural": ["water", "bay", "strait"],
+                "water": ["sea", "ocean", "bay", "strait", "lake", "river", "pond", "reservoir", "lagoon", "canal"],
+                "waterway": "riverbank",
+                "place": ["sea", "ocean"],
             },
-            name="marine_water",
-        )
-        pbar.update(1)
-
-        # 3. Fetch Inland Water (rivières, lacs)
-        pbar.set_description("Downloading inland water")
-        inland_water = fetch_features(
-            point,
-            compensated_dist,
-            tags={
-                "natural": "water",
-                "waterway": "riverbank"
-            },
-            name="inland_water",
+            name="water",
         )
         pbar.update(1)
 
@@ -591,25 +580,15 @@ def create_poster(
     g_proj = ox.project_graph(g)
 
     # 3. Plot Layers
-    # Layer 0: Marine water (mer, océan, baies, détroits) - SOUS la terre
-    if marine_water is not None and not marine_water.empty:
-        marine_polys = marine_water[marine_water.geometry.type.isin(["Polygon", "MultiPolygon"])]
-        if not marine_polys.empty:
+    # Layer 1: Water (mer, océan, rivières, lacs) - même couleur theme['water']
+    if water_features is not None and not water_features.empty:
+        water_polys = water_features[water_features.geometry.type.isin(["Polygon", "MultiPolygon"])]
+        if not water_polys.empty:
             try:
-                marine_polys = ox.projection.project_gdf(marine_polys)
+                water_polys = ox.projection.project_gdf(water_polys)
             except Exception:
-                marine_polys = marine_polys.to_crs(g_proj.graph['crs'])
-            marine_polys.plot(ax=ax, facecolor=THEME['water'], edgecolor='none', zorder=-1)
-
-    # Layer 2: Inland water (rivières, lacs) - AU-DESSUS de la terre
-    if inland_water is not None and not inland_water.empty:
-        inland_polys = inland_water[inland_water.geometry.type.isin(["Polygon", "MultiPolygon"])]
-        if not inland_polys.empty:
-            try:
-                inland_polys = ox.projection.project_gdf(inland_polys)
-            except Exception:
-                inland_polys = inland_polys.to_crs(g_proj.graph['crs'])
-            inland_polys.plot(ax=ax, facecolor=THEME['water'], edgecolor='none', zorder=2)
+                water_polys = water_polys.to_crs(g_proj.graph['crs'])
+            water_polys.plot(ax=ax, facecolor=THEME['water'], edgecolor='none', zorder=0.5)
 
     if parks is not None and not parks.empty:
         # Filter to only polygon/multipolygon geometries to avoid point features showing as dots

@@ -95,10 +95,14 @@ def reverse_geocode():
 @app.route('/api/generate', methods=['POST'])
 def generate_poster():
     """Génère un ou plusieurs posters selon les paramètres"""
+    import json as json_module
     data = request.json
 
     print("\n" + "="*60)
     print("🚀 GÉNÉRATION LANCÉE")
+    print("="*60)
+    print("📥 [BACKEND] Données reçues:")
+    print(json_module.dumps(data, indent=2, ensure_ascii=False))
     print("="*60)
 
     try:
@@ -108,8 +112,12 @@ def generate_poster():
         lat = float(data.get('lat'))
         lng = float(data.get('lng'))
 
+        print(f"📍 [BACKEND] Localisation: {city}, {country}")
+        print(f"🗺️ [BACKEND] Coordonnées: {lat:.6f}, {lng:.6f}")
+
         # Distance calculée depuis le cadre (WYSIWYG)
         distance = data.get('distance', 12000)
+        print(f"📏 [BACKEND] Distance reçue du frontend: {distance}m")
 
         # Format et orientation
         format_preset = data.get('format_preset', 'A3')
@@ -119,9 +127,13 @@ def generate_poster():
         width = preset['width']
         height = preset['height']
 
+        print(f"📐 [BACKEND] Format: {format_preset} ({width}×{height} inches)")
+        print(f"🔄 [BACKEND] Orientation: {orientation}")
+
         # Inverser si paysage
         if orientation == 'landscape':
             width, height = height, width
+            print(f"📐 [BACKEND] Après inversion paysage: {width}×{height} inches")
 
         # Custom dimensions si spécifiées
         if data.get('custom_width'):

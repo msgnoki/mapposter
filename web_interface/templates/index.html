@@ -493,11 +493,29 @@
             const mapContainer = document.getElementById('map');
             const mapRect = mapContainer.getBoundingClientRect();
 
-            // Convertir les pixels du cadre en coordonnées map
+            // 🔍 DEBUG: Positions du cadre
+            console.log('🔍 [FRAME] Positions:', {
+                frameRect: {
+                    left: frameRect.left,
+                    top: frameRect.top,
+                    width: frameRect.width,
+                    height: frameRect.height
+                },
+                mapRect: {
+                    left: mapRect.left,
+                    top: mapRect.top,
+                    width: mapRect.width,
+                    height: mapRect.height
+                }
+            });
+
+            // Convertir les pixels du cadre en coordonnées map (offset en cas de sidebar)
             const frameCenter = {
-                x: mapRect.width / 2,
-                y: mapRect.height / 2
+                x: frameRect.left + frameRect.width / 2 - mapRect.left,
+                y: frameRect.top + frameRect.height / 2 - mapRect.top
             };
+
+            console.log('🔍 [FRAME] Centre pixels:', frameCenter);
 
             const frameHalfWidth = frameRect.width / 2;
             const frameHalfHeight = frameRect.height / 2;
@@ -506,36 +524,60 @@
             const topLeft = map.containerPointToLatLng([frameCenter.x - frameHalfWidth, frameCenter.y - frameHalfHeight]);
             const topRight = map.containerPointToLatLng([frameCenter.x + frameHalfWidth, frameCenter.y - frameHalfHeight]);
             const bottomLeft = map.containerPointToLatLng([frameCenter.x - frameHalfWidth, frameCenter.y + frameHalfHeight]);
-            const center = map.getCenter();
+            const center = map.containerPointToLatLng([frameCenter.x, frameCenter.y]);
+
+            console.log('🔍 [FRAME] Centre géo:', center);
 
             // Calculer les distances depuis le centre
             const distNS = map.distance(center, [topLeft.lat, center.lng]);
             const distEW = map.distance(center, [center.lat, topRight.lng]);
 
+            console.log('🔍 [FRAME] Distances brutes:', { distNS, distEW });
+
             // create_poster utilise dist comme la PLUS GRANDE dimension
             // Portrait: hauteur > largeur → utiliser distNS
             // Landscape: largeur > hauteur → utiliser distEW
-            const distance = currentOrientation === 'portrait'
+            const frameDistance = currentOrientation === 'portrait'
                 ? Math.round(distNS)  // Portrait: rayon vertical
                 : Math.round(distEW); // Landscape: rayon horizontal
 
-            return { distance, bounds: { topLeft, topRight, bottomLeft, center } };
+            // Compenser pour le facteur backend (compensated_dist calculation)
+            const compensationFactor = (Math.max(currentFormat.width, currentFormat.height) /
+                                       Math.min(currentFormat.width, currentFormat.height)) / 4;
+
+            const distanceForBackend = Math.round(frameDistance / compensationFactor);
+
+            console.log('🔍 [FRAME] Distances finales:', {
+                frameDistance,
+                compensationFactor: compensationFactor.toFixed(2),
+                distanceForBackend,
+                orientation: currentOrientation,
+                format: `${currentFormat.width}x${currentFormat.height}`
+            });
+
+            return {
+                distance: distanceForBackend,
+                frameDistance: frameDistance,
+                bounds: { topLeft, topRight, bottomLeft, center }
+            };
         }
 
         // Mettre à jour les informations de la carte
         function updateMapInfo() {
-            const center = map.getCenter();
             const frameBounds = getFrameBounds();
 
             document.getElementById('map-center').textContent =
-                `Centre: ${center.lat.toFixed(4)}, ${center.lng.toFixed(4)}`;
+                `Centre: ${frameBounds.bounds.center.lat.toFixed(4)}, ${frameBounds.bounds.center.lng.toFixed(4)}`;
             document.getElementById('map-distance').textContent =
-                `Rayon: ${frameBounds.distance}m`;
+                `Rayon cadre: ${frameBounds.frameDistance}m → Backend: ${frameBounds.distance}m`;
+
+            console.log('📊 [MAP-INFO] Mis à jour');
         }
 
         // Reverse geocoding pour obtenir le lieu
         async function updateLocation() {
-            const center = map.getCenter();
+            const frameBounds = getFrameBounds();
+            const center = frameBounds.bounds.center;
 
             try {
                 const response = await fetch('/api/geocode', {
@@ -600,6 +642,8 @@
 
         // Générer les posters
         async function generatePosters() {
+            console.log('\n🚀 [GENERATE] ========== DÉBUT GÉNÉRATION ==========');
+
             const btn = document.querySelector('.generate-btn');
             const message = document.getElementById('message');
 
@@ -607,7 +651,10 @@
             const selectedThemes = Array.from(document.querySelectorAll('input[name="theme"]:checked'))
                 .map(cb => cb.value);
 
+            console.log('🎨 [GENERATE] Thèmes sélectionnés:', selectedThemes);
+
             if (selectedThemes.length === 0) {
+                console.warn('⚠️ [GENERATE] Aucun thème sélectionné');
                 showMessage('Veuillez sélectionner au moins un thème', 'error');
                 return;
             }
@@ -619,26 +666,56 @@
             message.style.display = 'block';
 
             try {
-                const center = map.getCenter();
                 const frameBounds = getFrameBounds();
+                const center = frameBounds.bounds.center;
+
+                console.log('📍 [GENERATE] Centre du cadre:', center);
 
                 // Récupérer les valeurs des champs
                 const cityValue = document.getElementById('location-city').value || currentLocation.city;
                 const countryValue = document.getElementById('location-country').value || currentLocation.country;
+
+                console.log('🏙️ [GENERATE] Ville/Pays:', { cityValue, countryValue });
+
+                const formatBtn = document.querySelector('.format-btn.active[data-format]');
+                const formatKey = formatBtn?.dataset.format || 'A3';
+                let width = currentFormat.width;
+                let height = currentFormat.height;
+                if (currentOrientation === 'landscape') {
+                    [width, height] = [height, width];
+                }
+
+                console.log('📐 [GENERATE] Format:', {
+                    preset: formatKey,
+                    width,
+                    height,
+                    orientation: currentOrientation
+                });
+
+                // frameBounds.distance est DÉJÀ compensé (calculé dans getFrameBounds)
+                // Ne PAS diviser à nouveau par compensationFactor!
+                const distanceForBackend = frameBounds.distance;
+
+                console.log('📏 [GENERATE] Distance utilisée:', {
+                    frameDistance: frameBounds.frameDistance,
+                    distanceForBackend: distanceForBackend
+                });
 
                 const data = {
                     city: cityValue,
                     country: 'France', // Pour le géocodage
                     lat: center.lat,
                     lng: center.lng,
-                    distance: frameBounds.distance, // Distance calculée depuis le cadre
+                    distance: distanceForBackend, // Distance déjà compensée depuis getFrameBounds()
                     themes: selectedThemes,
-                    format_preset: document.querySelector('.format-btn.active[data-format]')?.dataset.format || 'A3',
+                    format_preset: formatKey,
                     orientation: currentOrientation,
                     output_format: document.getElementById('output-format').value,
                     dpi: document.getElementById('dpi').value,
                     country_label: countryValue
                 };
+
+                console.log('📦 [GENERATE] Données envoyées au backend:', data);
 
                 const response = await fetch('/api/generate', {
                     method: 'POST',
@@ -646,14 +723,21 @@
                     body: JSON.stringify(data)
                 });
 
+                console.log('🔄 [GENERATE] Réponse HTTP:', response.status, response.statusText);
+
                 const result = await response.json();
 
+                console.log('✅ [GENERATE] Résultat:', result);
+
                 if (result.success) {
+                    console.log('✅ [GENERATE] ========== GÉNÉRATION RÉUSSIE ==========\n');
                     showMessage(`✅ ${result.message}`, 'success');
                 } else {
+                    console.error('❌ [GENERATE] Erreur backend:', result.error);
                     showMessage(`❌ Erreur: ${result.error}`, 'error');
                 }
             } catch (error) {
+                console.error('❌ [GENERATE] Exception:', error);
                 showMessage(`❌ Erreur: ${error.message}`, 'error');
             } finally {
                 btn.disabled = false;
