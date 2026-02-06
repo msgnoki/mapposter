@@ -217,9 +217,12 @@ def load_theme(theme_name="terracotta"):
 THEME = dict[str, str]()  # Will be loaded later
 
 
-def create_gradient_fade(ax, color, location="bottom", zorder=10):
+def create_gradient_fade(ax, color, location="bottom", zorder=10, height=0.25):
     """
     Creates a fade effect at the top or bottom of the map.
+
+    Args:
+        height: Gradient height as fraction of image (0.0-0.5). Default 0.25 = 25%.
     """
     vals = np.linspace(0, 1, 256).reshape(-1, 1)
     gradient = np.hstack((vals, vals))
@@ -233,10 +236,10 @@ def create_gradient_fade(ax, color, location="bottom", zorder=10):
     if location == "bottom":
         my_colors[:, 3] = np.linspace(1, 0, 256)
         extent_y_start = 0
-        extent_y_end = 0.25
+        extent_y_end = height
     else:
         my_colors[:, 3] = np.linspace(0, 1, 256)
-        extent_y_start = 0.75
+        extent_y_start = 1.0 - height
         extent_y_end = 1.0
 
     custom_cmap = mcolors.ListedColormap(my_colors)
@@ -499,6 +502,7 @@ def create_poster(
     display_city=None,
     display_country=None,
     fonts=None,
+    gradient_height=0.25,
 ):
     """
     Generate a complete map poster with roads, water, parks, and typography.
@@ -517,6 +521,7 @@ def create_poster(
         height: Poster height in inches (default: 16)
         country_label: Optional override for country text on poster
         _name_label: Optional override for city name (unused, reserved for future use)
+        gradient_height: Height of top/bottom gradient fade as fraction (0.0-0.5, default: 0.25 = 25%)
 
     Raises:
         RuntimeError: If street network data cannot be retrieved
@@ -542,6 +547,10 @@ def create_poster(
         if g is None:
             raise RuntimeError("Failed to retrieve street network data.")
         pbar.update(1)
+
+        # NOTE: boundary=land_area désactivé car couvre aussi la mer
+        # Utiliser landuse suffit pour les zones terrestres détaillées
+        landmass = None
 
         # 2. Fetch Landuse/Landcover (terre)
         pbar.set_description("Downloading land areas")
@@ -622,6 +631,17 @@ def create_poster(
         )
         ax.add_patch(sea_rect)
 
+    # Layer -0.5: Landmass (boundary=land_area) - Masses continentales plus foncées
+    if landmass is not None and not landmass.empty:
+        landmass_polys = landmass[landmass.geometry.type.isin(["Polygon", "MultiPolygon"])]
+        if not landmass_polys.empty:
+            try:
+                landmass_polys = ox.projection.project_gdf(landmass_polys)
+            except Exception:
+                landmass_polys = landmass_polys.to_crs(g_proj.graph['crs'])
+            # Dessiner les masses continentales (couleur plus foncée que bg)
+            landmass_polys.plot(ax=ax, facecolor=THEME.get('landmass', THEME['bg']), edgecolor='none', zorder=-0.5)
+
     # Layer 0: Landuse/Landcover (terre) - protège le fond bleu
     if landuse is not None and not landuse.empty:
         landuse_polys = landuse[landuse.geometry.type.isin(["Polygon", "MultiPolygon"])]
@@ -675,8 +695,8 @@ def create_poster(
     ax.set_ylim(crop_ylim)
 
     # Layer 3: Gradients (Top and Bottom)
-    create_gradient_fade(ax, THEME['gradient_color'], location='bottom', zorder=10)
-    create_gradient_fade(ax, THEME['gradient_color'], location='top', zorder=10)
+    create_gradient_fade(ax, THEME['gradient_color'], location='bottom', zorder=10, height=gradient_height)
+    create_gradient_fade(ax, THEME['gradient_color'], location='top', zorder=10, height=gradient_height)
 
     # Calculate scale factor based on smaller dimension (reference 12 inches)
     # This ensures text scales properly for both portrait and landscape orientations

@@ -39,6 +39,39 @@
             transition: all 0.3s ease;
         }
 
+        /* Marqueur croix au centre du cadre */
+        #center-marker {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            width: 20px;
+            height: 20px;
+            transform: translate(-50%, -50%);
+        }
+
+        #center-marker::before,
+        #center-marker::after {
+            content: '';
+            position: absolute;
+            background: #e74c3c;
+        }
+
+        #center-marker::before {
+            top: 50%;
+            left: 0;
+            width: 100%;
+            height: 2px;
+            transform: translateY(-50%);
+        }
+
+        #center-marker::after {
+            top: 0;
+            left: 50%;
+            width: 2px;
+            height: 100%;
+            transform: translateX(-50%);
+        }
+
         /* Panneau latéral */
         #sidebar {
             position: fixed;
@@ -322,7 +355,9 @@
     <div id="map"></div>
 
     <!-- Cadre fixe -->
-    <div id="frame-overlay"></div>
+    <div id="frame-overlay">
+        <div id="center-marker"></div>
+    </div>
 
     <!-- Info carte -->
     <div class="map-info">
@@ -377,17 +412,31 @@
             <h3>📐 Format</h3>
             <div class="format-grid">
                 {% for key, preset in format_presets.items() %}
-                <button class="format-btn {% if key == 'A3' %}active{% endif %}"
+                <button class="format-btn {% if key == 'A' %}active{% endif %}"
                         data-format="{{ key }}"
                         data-width="{{ preset.width }}"
                         data-height="{{ preset.height }}"
                         onclick="selectFormat('{{ key }}', {{ preset.width }}, {{ preset.height }})">
-                    <div style="font-weight: 600;">{{ key.upper() }}</div>
+                    <div style="font-weight: 600;">{{ preset.name.split('(')[0].strip() }}</div>
+                    {% if key != 'custom' %}
                     <div style="font-size: 11px; opacity: 0.7; margin-top: 2px;">
                         {{ "%.1f"|format(preset.width) }} × {{ "%.1f"|format(preset.height) }}"
                     </div>
+                    {% endif %}
                 </button>
                 {% endfor %}
+            </div>
+
+            <!-- Custom dimensions -->
+            <div id="custom-dimensions" style="display: none; margin-top: 12px; gap: 8px; grid-template-columns: 1fr 1fr;">
+                <div class="control-group" style="margin-bottom: 0;">
+                    <label>Largeur (inches)</label>
+                    <input type="number" id="custom-width" min="4" max="48" step="0.1" value="12" oninput="updateCustomDimensions()">
+                </div>
+                <div class="control-group" style="margin-bottom: 0;">
+                    <label>Hauteur (inches)</label>
+                    <input type="number" id="custom-height" min="4" max="48" step="0.1" value="16" oninput="updateCustomDimensions()">
+                </div>
             </div>
 
             <!-- Orientation -->
@@ -422,14 +471,44 @@
                     <option value="600">600 DPI (Haute qualité)</option>
                 </select>
             </div>
+
+            <div class="control-group">
+                <label>Hauteur du dégradé (blur) <span id="gradient-value">25%</span></label>
+                <input type="range" id="gradient-height" min="0" max="50" value="25" step="1"
+                       oninput="document.getElementById('gradient-value').textContent = this.value + '%'"
+                       style="width: 100%;">
+                <div style="font-size: 11px; opacity: 0.7; margin-top: 4px;">
+                    0% = Aucun blur, 50% = Maximum
+                </div>
+            </div>
         </div>
 
         <!-- Génération -->
         <div class="sidebar-section">
-            <button class="generate-btn" onclick="generatePosters()">
+            <button class="generate-btn" id="generate-btn" onclick="generatePosters()">
                 🚀 Générer les posters
             </button>
+            <button class="generate-btn" id="stop-btn" onclick="stopGeneration()" style="display: none; background: #e74c3c;">
+                🛑 Arrêter la génération
+            </button>
             <div class="message" id="message"></div>
+        </div>
+
+        <!-- Logs de génération -->
+        <div class="sidebar-section" id="logs-section" style="display: none;">
+            <h3>📋 Logs en temps réel</h3>
+            <div id="generation-logs" style="
+                background: #1e1e1e;
+                color: #00ff00;
+                font-family: 'Courier New', monospace;
+                font-size: 11px;
+                padding: 12px;
+                border-radius: 6px;
+                max-height: 200px;
+                overflow-y: auto;
+                white-space: pre-wrap;
+                word-wrap: break-word;
+            "></div>
         </div>
     </div>
 
@@ -443,7 +522,11 @@
 
         // Initialiser la carte
         function initMap() {
-            map = L.map('map').setView([currentLocation.lat, currentLocation.lng], 13);
+            map = L.map('map', {
+                zoomDelta: 0.25,           // Zoom par incréments de 0.25 (au lieu de 1)
+                zoomSnap: 0.25,            // Permettre des niveaux de zoom fractionnaires
+                wheelPxPerZoomLevel: 120   // Plus de pixels nécessaires = zoom plus doux
+            }).setView([currentLocation.lat, currentLocation.lng], 13);
 
             L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
                 attribution: '© OpenStreetMap contributors',
@@ -463,14 +546,19 @@
             const frame = document.getElementById('frame-overlay');
             const mapSize = map.getSize();
 
-            // Calculer la taille du cadre en pixels basé sur le ratio du format
-            const ratio = currentOrientation === 'portrait'
-                ? currentFormat.height / currentFormat.width
-                : currentFormat.width / currentFormat.height;
+            // Dimensions du poster après rotation selon l'orientation
+            let posterWidth = currentFormat.width;
+            let posterHeight = currentFormat.height;
+            if (currentOrientation === 'landscape') {
+                [posterWidth, posterHeight] = [posterHeight, posterWidth];
+            }
+
+            // Calculer la taille du cadre en pixels basé sur le ratio du poster
+            const ratio = posterHeight / posterWidth;
 
             let frameWidth, frameHeight;
 
-            // Prendre 60% de la taille de la carte
+            // Ajuster la taille du cadre selon l'orientation
             if (currentOrientation === 'portrait') {
                 frameWidth = Math.min(mapSize.x * 0.3, 300);
                 frameHeight = frameWidth * ratio;
@@ -541,9 +629,16 @@
                 ? Math.round(distNS)  // Portrait: rayon vertical
                 : Math.round(distEW); // Landscape: rayon horizontal
 
+            // Dimensions du poster après rotation selon l'orientation
+            let posterWidth = currentFormat.width;
+            let posterHeight = currentFormat.height;
+            if (currentOrientation === 'landscape') {
+                [posterWidth, posterHeight] = [posterHeight, posterWidth];
+            }
+
             // Compenser pour le facteur backend (compensated_dist calculation)
-            const compensationFactor = (Math.max(currentFormat.width, currentFormat.height) /
-                                       Math.min(currentFormat.width, currentFormat.height)) / 4;
+            const compensationFactor = (Math.max(posterWidth, posterHeight) /
+                                       Math.min(posterWidth, posterHeight)) / 4;
 
             const distanceForBackend = Math.round(frameDistance / compensationFactor);
 
@@ -569,7 +664,7 @@
             document.getElementById('map-center').textContent =
                 `Centre: ${frameBounds.bounds.center.lat.toFixed(4)}, ${frameBounds.bounds.center.lng.toFixed(4)}`;
             document.getElementById('map-distance').textContent =
-                `Rayon cadre: ${frameBounds.frameDistance}m → Backend: ${frameBounds.distance}m`;
+                `Rayon: ${frameBounds.distance}m`;
 
             console.log('📊 [MAP-INFO] Mis à jour');
         }
@@ -611,8 +706,30 @@
             });
             document.querySelector(`[data-format="${format}"]`).classList.add('active');
 
+            // Afficher/masquer les dimensions personnalisées
+            const customDimensions = document.getElementById('custom-dimensions');
+            if (format === 'custom') {
+                customDimensions.style.display = 'grid';
+                // Lire les valeurs des inputs
+                width = parseFloat(document.getElementById('custom-width').value) || 12;
+                height = parseFloat(document.getElementById('custom-height').value) || 16;
+            } else {
+                customDimensions.style.display = 'none';
+            }
+
             currentFormat = { width, height };
             updateFrame();
+        }
+
+        // Mettre à jour le format quand les dimensions custom changent
+        function updateCustomDimensions() {
+            const formatBtn = document.querySelector('.format-btn.active[data-format]');
+            if (formatBtn && formatBtn.dataset.format === 'custom') {
+                const width = parseFloat(document.getElementById('custom-width').value) || 12;
+                const height = parseFloat(document.getElementById('custom-height').value) || 16;
+                currentFormat = { width, height };
+                updateFrame();
+            }
         }
 
         // Changer l'orientation
@@ -640,12 +757,39 @@
             this.textContent = sidebar.classList.contains('collapsed') ? '▶' : '◀';
         });
 
+        // Ajouter un log dans la console web
+        function addLog(text) {
+            const logsDiv = document.getElementById('generation-logs');
+            const timestamp = new Date().toLocaleTimeString();
+            logsDiv.textContent += `[${timestamp}] ${text}\n`;
+            logsDiv.scrollTop = logsDiv.scrollHeight;  // Auto-scroll to bottom
+        }
+
+        // Arrêter la génération
+        async function stopGeneration() {
+            addLog('🛑 Envoi demande d\'annulation...');
+            try {
+                const response = await fetch('/api/cancel', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' }
+                });
+                const result = await response.json();
+                addLog('✓ Annulation envoyée au serveur');
+                document.getElementById('stop-btn').disabled = true;
+            } catch (error) {
+                addLog('❌ Erreur lors de l\'annulation: ' + error.message);
+            }
+        }
+
         // Générer les posters
         async function generatePosters() {
             console.log('\n🚀 [GENERATE] ========== DÉBUT GÉNÉRATION ==========');
 
-            const btn = document.querySelector('.generate-btn');
+            const generateBtn = document.getElementById('generate-btn');
+            const stopBtn = document.getElementById('stop-btn');
             const message = document.getElementById('message');
+            const logsSection = document.getElementById('logs-section');
+            const logsDiv = document.getElementById('generation-logs');
 
             // Vérifier qu'au moins un thème est sélectionné
             const selectedThemes = Array.from(document.querySelectorAll('input[name="theme"]:checked'))
@@ -659,10 +803,15 @@
                 return;
             }
 
-            btn.disabled = true;
-            btn.classList.add('loading');
-            btn.textContent = `⏳ Génération ${selectedThemes.length} poster(s)...`;
-            showMessage(`⏳ Génération en cours (${selectedThemes.length} thèmes). Voir progression dans le terminal Flask!`, 'success');
+            // Afficher les logs et le bouton stop
+            logsDiv.textContent = '';  // Clear previous logs
+            logsSection.style.display = 'block';
+            generateBtn.style.display = 'none';
+            stopBtn.style.display = 'block';
+            stopBtn.disabled = false;
+
+            addLog(`🚀 Début génération de ${selectedThemes.length} poster(s)`);
+            showMessage(`⏳ Génération en cours...`, 'success');
             message.style.display = 'block';
 
             try {
@@ -678,7 +827,7 @@
                 console.log('🏙️ [GENERATE] Ville/Pays:', { cityValue, countryValue });
 
                 const formatBtn = document.querySelector('.format-btn.active[data-format]');
-                const formatKey = formatBtn?.dataset.format || 'A3';
+                const formatKey = formatBtn?.dataset.format || 'A';
                 let width = currentFormat.width;
                 let height = currentFormat.height;
                 if (currentOrientation === 'landscape') {
@@ -712,7 +861,10 @@
                     orientation: currentOrientation,
                     output_format: document.getElementById('output-format').value,
                     dpi: document.getElementById('dpi').value,
-                    country_label: countryValue
+                    country_label: countryValue,
+                    custom_width: formatKey === 'custom' ? width : null,
+                    custom_height: formatKey === 'custom' ? height : null,
+                    gradient_height: parseFloat(document.getElementById('gradient-height').value) / 100  // % → decimal
                 };
 
                 console.log('📦 [GENERATE] Données envoyées au backend:', data);
@@ -731,18 +883,26 @@
 
                 if (result.success) {
                     console.log('✅ [GENERATE] ========== GÉNÉRATION RÉUSSIE ==========\n');
+                    addLog(`✅ Terminé! ${result.message}`);
                     showMessage(`✅ ${result.message}`, 'success');
+                } else if (result.cancelled) {
+                    console.log('🛑 [GENERATE] ========== GÉNÉRATION ANNULÉE ==========\n');
+                    addLog(`🛑 ${result.message}`);
+                    showMessage(`🛑 ${result.message}`, 'error');
                 } else {
                     console.error('❌ [GENERATE] Erreur backend:', result.error);
+                    addLog(`❌ Erreur: ${result.error}`);
                     showMessage(`❌ Erreur: ${result.error}`, 'error');
                 }
             } catch (error) {
                 console.error('❌ [GENERATE] Exception:', error);
+                addLog(`❌ Exception: ${error.message}`);
                 showMessage(`❌ Erreur: ${error.message}`, 'error');
             } finally {
-                btn.disabled = false;
-                btn.classList.remove('loading');
-                btn.textContent = '🚀 Générer les posters';
+                // Restaurer les boutons
+                generateBtn.style.display = 'block';
+                stopBtn.style.display = 'none';
+                generateBtn.disabled = false;
             }
         }
 

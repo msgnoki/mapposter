@@ -9,6 +9,8 @@ from pathlib import Path
 import os
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import multiprocessing
 
 # Ajouter le répertoire parent au path pour importer create_map_poster
 parent_dir = str(Path(__file__).resolve().parent.parent)
@@ -34,14 +36,15 @@ from performance_optimizations import (
 app = Flask(__name__)
 app.config['OUTPUT_DIR'] = Path(__file__).parent.parent / 'posters'
 
+# Flag pour annuler la génération en cours
+generation_cancelled = False
+
 # Presets de formats
 FORMAT_PRESETS = {
-    'A3': {'width': 11.7, 'height': 16.5, 'name': 'A3 (11.7 × 16.5")'},
-    'A4': {'width': 8.3, 'height': 11.7, 'name': 'A4 (8.3 × 11.7")'},
-    'A5': {'width': 5.8, 'height': 8.3, 'name': 'A5 (5.8 × 8.3")'},
-    'ultrawide': {'width': 11.47, 'height': 4.8, 'name': 'Ultrawide 21:9 (3440×1440)'},
+    'A': {'width': 11.7, 'height': 16.5, 'name': 'Format A (PDF vectoriel)'},
     'square': {'width': 12, 'height': 12, 'name': 'Carré 12" × 12"'},
-    'poster': {'width': 18, 'height': 24, 'name': 'Poster 18" × 24"'},
+    'ultrawide': {'width': 11.47, 'height': 4.8, 'name': 'Ultrawide 21:9'},
+    'custom': {'width': 12, 'height': 16, 'name': 'Personnalisé'},
 }
 
 
@@ -92,6 +95,56 @@ def reverse_geocode():
     return jsonify({'success': False, 'error': 'Location not found'}), 404
 
 
+def generate_single_theme(theme, city, country, lat, lng, distance, output_format,
+                          width, height, country_label, gradient_height, output_dir):
+    """
+    Fonction worker pour générer un seul thème (appelée en parallèle)
+    """
+    try:
+        # Charger le thème et les fonts avec cache
+        cmp.THEME = load_theme_cached(theme)
+        fonts = load_fonts_cached()
+
+        # Nom de fichier
+        city_slug = city.lower().replace(' ', '_').replace(',', '')
+        timestamp = time.strftime('%Y%m%d_%H%M%S_%f')  # Ajout microsecondes pour unicité
+        filename = f"{city_slug}_{theme}_{distance}m_{timestamp}.{output_format}"
+        output_path = output_dir / filename
+
+        print(f"  🎨 {theme.upper()} - Début génération...")
+
+        # Générer
+        create_poster(
+            city=city,
+            country=country,
+            point=(lat, lng),
+            dist=distance,
+            output_file=str(output_path),
+            output_format=output_format,
+            width=width,
+            height=height,
+            country_label=country_label,
+            fonts=fonts,
+            gradient_height=gradient_height
+        )
+
+        print(f"  ✓ {theme.upper()} - Terminé")
+
+        return {
+            'success': True,
+            'theme': theme,
+            'filename': filename,
+            'path': str(output_path)
+        }
+    except Exception as e:
+        print(f"  ❌ {theme.upper()} - Erreur: {e}")
+        return {
+            'success': False,
+            'theme': theme,
+            'error': str(e)
+        }
+
+
 @app.route('/api/generate', methods=['POST'])
 def generate_poster():
     """Génère un ou plusieurs posters selon les paramètres"""
@@ -120,10 +173,10 @@ def generate_poster():
         print(f"📏 [BACKEND] Distance reçue du frontend: {distance}m")
 
         # Format et orientation
-        format_preset = data.get('format_preset', 'A3')
+        format_preset = data.get('format_preset', 'A')
         orientation = data.get('orientation', 'portrait')
 
-        preset = FORMAT_PRESETS.get(format_preset, FORMAT_PRESETS['A3'])
+        preset = FORMAT_PRESETS.get(format_preset, FORMAT_PRESETS['A'])
         width = preset['width']
         height = preset['height']
 
@@ -146,6 +199,11 @@ def generate_poster():
         output_format = data.get('output_format', 'pdf')
         themes = data.get('themes', ['terracotta'])
         country_label = data.get('country_label', country)
+        gradient_height = float(data.get('gradient_height', 0.25))  # Default 25%
+
+        # Réinitialiser le flag d'annulation au début de chaque génération
+        global generation_cancelled
+        generation_cancelled = False
 
         # Générer les posters avec optimisation
         generated_files = []
@@ -159,49 +217,62 @@ def generate_poster():
         print(f"📊 {total_themes} thème(s) à générer")
         print(f"📍 Ville: {city} ({distance}m)")
         print(f"📐 Format: {width:.1f}×{height:.1f} inches → {output_format.upper()}")
+
+        # Déterminer le nombre de workers (max 6 cores utilisables)
+        num_workers = min(6, multiprocessing.cpu_count(), total_themes)
+        print(f"⚡ Parallélisation: {num_workers} workers")
         print("")
 
-        for idx, theme in enumerate(themes, 1):
-            theme_start = time.time()
+        # Génération PARALLÈLE avec ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=num_workers) as executor:
+            # Soumettre toutes les tâches
+            future_to_theme = {
+                executor.submit(
+                    generate_single_theme,
+                    theme, city, country, lat, lng, distance, output_format,
+                    width, height, country_label, gradient_height, app.config['OUTPUT_DIR']
+                ): theme
+                for theme in themes
+            }
 
-            # Charger le thème avec cache (optimisation)
-            cmp.THEME = load_theme_cached(theme)
+            # Traiter les résultats au fur et à mesure
+            completed = 0
+            for future in as_completed(future_to_theme):
+                # Vérifier si l'utilisateur a annulé
+                if generation_cancelled:
+                    print(f"\n🛑 Génération annulée après {completed}/{total_themes} thème(s)")
+                    # Annuler les tâches restantes
+                    for f in future_to_theme:
+                        f.cancel()
+                    executor.shutdown(wait=False, cancel_futures=True)
+                    return jsonify({
+                        'success': False,
+                        'cancelled': True,
+                        'files': generated_files,
+                        'message': f'Génération annulée. {len(generated_files)} poster(s) généré(s) avant l\'annulation.'
+                    })
 
-            # Nom de fichier
-            city_slug = city.lower().replace(' ', '_').replace(',', '')
-            timestamp = time.strftime('%Y%m%d_%H%M%S')
-            filename = f"{city_slug}_{theme}_{distance}m_{timestamp}.{output_format}"
-            output_path = app.config['OUTPUT_DIR'] / filename
+                theme = future_to_theme[future]
+                try:
+                    result = future.result()
+                    completed += 1
 
-            print(f"[{idx}/{total_themes}] 🎨 {theme.upper()}...")
+                    if result['success']:
+                        generated_files.append({
+                            'theme': result['theme'],
+                            'filename': result['filename'],
+                            'path': result['path']
+                        })
+                        elapsed = time.time() - start_time
+                        avg_time = elapsed / completed if completed > 0 else 0
+                        remaining = avg_time * (total_themes - completed)
+                        print(f"  [{completed}/{total_themes}] ✓ {theme} OK - Reste: ~{int(remaining)}s")
+                    else:
+                        print(f"  [{completed}/{total_themes}] ❌ {theme} ERREUR: {result.get('error', 'Unknown')}")
 
-            # Générer
-            # Note: DPI est géré automatiquement par matplotlib (300 DPI par défaut)
-            create_poster(
-                city=city,
-                country=country,
-                point=(lat, lng),
-                dist=distance,
-                output_file=str(output_path),
-                output_format=output_format,
-                width=width,
-                height=height,
-                country_label=country_label,
-                fonts=fonts
-            )
-
-            theme_time = time.time() - theme_start
-            elapsed = time.time() - start_time
-            avg_time = elapsed / idx
-            remaining = avg_time * (total_themes - idx)
-
-            generated_files.append({
-                'theme': theme,
-                'filename': filename,
-                'path': str(output_path)
-            })
-
-            print(f"  ✓ {theme} OK ({theme_time:.1f}s) - Reste: ~{int(remaining)}s")
+                except Exception as e:
+                    completed += 1
+                    print(f"  [{completed}/{total_themes}] ❌ {theme} EXCEPTION: {e}")
 
         total_time = time.time() - start_time
         print("")
@@ -225,6 +296,15 @@ def generate_poster():
         }), 500
 
 
+@app.route('/api/cancel', methods=['POST'])
+def cancel_generation():
+    """Annule la génération en cours"""
+    global generation_cancelled
+    generation_cancelled = True
+    print("\n🛑 [BACKEND] Annulation demandée par l'utilisateur")
+    return jsonify({'success': True, 'message': 'Génération annulée'})
+
+
 @app.route('/api/download/<filename>')
 def download_file(filename):
     """Télécharge un fichier généré"""
@@ -244,7 +324,7 @@ if __name__ == '__main__':
     print("Fonctionnalités:")
     print("  • Sélection de zone avec cadre fixe")
     print("  • Choix des thèmes (multi-sélection)")
-    print("  • Presets de formats (A3, A4, A5, Ultrawide...)")
+    print("  • Presets de formats (A, Square, Ultrawide, Custom)")
     print("  • Orientation Portrait/Paysage")
     print("  • Format de sortie (PDF, PNG, SVG)")
     print("  • Configuration DPI")
