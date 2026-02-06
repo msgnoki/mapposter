@@ -530,7 +530,7 @@ def create_poster(
 
     # Progress bar for data fetching
     with tqdm(
-        total=3,
+        total=4,
         desc="Fetching map data",
         unit="step",
         bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt}",
@@ -543,7 +543,21 @@ def create_poster(
             raise RuntimeError("Failed to retrieve street network data.")
         pbar.update(1)
 
-        # 2. Fetch Water (mer, océan, rivières, lacs)
+        # 2. Fetch Landuse/Landcover (terre)
+        pbar.set_description("Downloading land areas")
+        landuse = fetch_features(
+            point,
+            compensated_dist,
+            tags={
+                "landuse": ["residential", "commercial", "industrial", "retail", "construction", "farmland", "meadow", "orchard", "vineyard", "forest"],
+                "natural": ["scrub", "grassland", "wood", "heath", "sand", "beach"],
+                "place": ["island"],
+            },
+            name="landuse",
+        )
+        pbar.update(1)
+
+        # 3. Fetch Water (mer, océan, rivières, lacs)
         pbar.set_description("Downloading water features")
         water_features = fetch_features(
             point,
@@ -558,7 +572,7 @@ def create_poster(
         )
         pbar.update(1)
 
-        # 3. Fetch Parks
+        # 4. Fetch Parks
         pbar.set_description("Downloading parks/green spaces")
         parks = fetch_features(
             point,
@@ -579,7 +593,46 @@ def create_poster(
     # Project graph to a metric CRS so distances and aspect are linear (meters)
     g_proj = ox.project_graph(g)
 
+    # Get crop limits to determine map bounds
+    crop_xlim, crop_ylim = get_crop_limits(g_proj, point, fig, compensated_dist)
+
     # 3. Plot Layers
+    # Layer -1: Coastline detection and sea background
+    # Télécharger la coastline pour détecter les zones côtières
+    coastline = fetch_features(
+        point,
+        compensated_dist,
+        tags={"natural": "coastline"},
+        name="coastline"
+    )
+
+    # Si on est près d'une côte, ajouter un fond bleu dans la zone viewport
+    if coastline is not None and not coastline.empty:
+        # Rectangle bleu pour la mer, limité à la zone visible
+        from matplotlib.patches import Rectangle
+        x_min, x_max = crop_xlim
+        y_min, y_max = crop_ylim
+        sea_rect = Rectangle(
+            (x_min, y_min),
+            x_max - x_min,
+            y_max - y_min,
+            facecolor=THEME['water'],
+            edgecolor='none',
+            zorder=-1
+        )
+        ax.add_patch(sea_rect)
+
+    # Layer 0: Landuse/Landcover (terre) - protège le fond bleu
+    if landuse is not None and not landuse.empty:
+        landuse_polys = landuse[landuse.geometry.type.isin(["Polygon", "MultiPolygon"])]
+        if not landuse_polys.empty:
+            try:
+                landuse_polys = ox.projection.project_gdf(landuse_polys)
+            except Exception:
+                landuse_polys = landuse_polys.to_crs(g_proj.graph['crs'])
+            # Dessiner la terre avec la couleur de fond (bg)
+            landuse_polys.plot(ax=ax, facecolor=THEME['bg'], edgecolor='none', zorder=0)
+
     # Layer 1: Water (mer, océan, rivières, lacs) - même couleur theme['water']
     if water_features is not None and not water_features.empty:
         water_polys = water_features[water_features.geometry.type.isin(["Polygon", "MultiPolygon"])]
