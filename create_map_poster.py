@@ -108,6 +108,36 @@ def cache_set(key: str, value):
         raise CacheError(f"Cache write failed: {e}") from e
 
 
+# Land Polygons Loading
+_LAND_POLYGONS_CACHE = None
+
+
+def load_land_polygons():
+    """
+    Load OSM land polygons shapefile (lazy loading with caching).
+
+    Returns GeoDataFrame with land polygons for the entire world.
+    The shapefile is loaded once and cached in memory for subsequent calls.
+    """
+    global _LAND_POLYGONS_CACHE
+
+    if _LAND_POLYGONS_CACHE is not None:
+        return _LAND_POLYGONS_CACHE
+
+    import geopandas as gpd
+    land_polygons_path = "data/land_polygons/land-polygons-split-4326/land_polygons.shp"
+
+    if not os.path.exists(land_polygons_path):
+        print(f"⚠️  WARNING: Land polygons not found at {land_polygons_path}")
+        print("   Download from: https://osmdata.openstreetmap.de/data/land-polygons.html")
+        return None
+
+    print("📂 Loading land polygons shapefile (one-time load)...")
+    _LAND_POLYGONS_CACHE = gpd.read_file(land_polygons_path)
+    print(f"✓ Loaded {len(_LAND_POLYGONS_CACHE)} land polygons")
+    return _LAND_POLYGONS_CACHE
+
+
 # Font loading now handled by font_management.py module
 
 
@@ -535,7 +565,7 @@ def create_poster(
 
     # Progress bar for data fetching
     with tqdm(
-        total=4,
+        total=6.5,
         desc="Fetching map data",
         unit="step",
         bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt}",
@@ -548,9 +578,21 @@ def create_poster(
             raise RuntimeError("Failed to retrieve street network data.")
         pbar.update(1)
 
-        # NOTE: boundary=land_area désactivé car couvre aussi la mer
-        # Utiliser landuse suffit pour les zones terrestres détaillées
-        landmass = None
+        # 1.5 Fetch Administrative Boundaries (limites administratives)
+        # Ces polygones couvrent toute la zone administrative (ville/commune)
+        # et garantissent que les zones terrestres non-taguées apparaissent
+        # comme terre et non comme mer (via le rectangle coastline)
+        pbar.set_description("Downloading administrative boundaries")
+        admin_boundaries = fetch_features(
+            point,
+            compensated_dist,
+            tags={
+                "boundary": "administrative",
+                "admin_level": ["4", "5", "6", "7", "8", "9", "10"],  # Niveaux régionaux à locaux
+            },
+            name="admin_boundaries",
+        )
+        pbar.update(0.5)  # Demi-étape
 
         # 2. Fetch Landuse/Landcover (terre)
         pbar.set_description("Downloading land areas")
@@ -558,24 +600,50 @@ def create_poster(
             point,
             compensated_dist,
             tags={
-                "landuse": ["residential", "commercial", "industrial", "retail", "construction", "farmland", "meadow", "orchard", "vineyard", "forest"],
-                "natural": ["scrub", "grassland", "wood", "heath", "sand", "beach"],
+                # Utiliser True pour capturer TOUS les types de landuse
+                # Cela évite que des zones terrestres non-catégorisées
+                # apparaissent bleues (couvertes par le rectangle coastline)
+                "landuse": True,
+                "natural": ["scrub", "grassland", "wood", "heath", "sand", "beach", "bare_rock", "scree", "shingle", "fell"],
                 "place": ["island"],
+                # Ajouter leisure pour les zones récréatives
+                "leisure": True,
             },
             name="landuse",
         )
         pbar.update(1)
 
         # 3. Fetch Water (mer, océan, rivières, lacs)
+        #
+        # Historically we requested a very broad set of tags here including
+        # ``place=ocean`` and ``water=sea``.  Those queries would return large
+        # polygons representing whole seas or bays, which then painted over
+        # otherwise untagged land as if it were water.  To avoid this we
+        # restrict our query to inland water bodies and riverbanks only.
+        #
+        # See https://wiki.openstreetmap.org/wiki/Tag:natural%3Dwater for
+        # details on the ``natural=water`` tag and
+        # https://wiki.openstreetmap.org/wiki/Tag:waterway=riverbank for
+        # riverbanks.  We deliberately omit ``place=sea`` and ``water=sea`` as
+        # those refer to the open ocean and should be rendered via the
+        # coastline/sea background instead.  This change prevents the
+        # inadvertent flooding of unclassified land areas reported in
+        # OSM_WATER_RENDERING_ISSUE.md.
         pbar.set_description("Downloading water features")
         water_features = fetch_features(
             point,
             compensated_dist,
             tags={
-                "natural": ["water", "bay", "strait"],
-                "water": ["sea", "ocean", "bay", "strait", "lake", "river", "pond", "reservoir", "lagoon", "canal"],
+                # ``natural=water`` covers lakes, reservoirs, ponds and other
+                # inland water bodies.  We exclude bay/strait here to avoid
+                # giant coastal polygons.
+                "natural": "water",
+                # ``waterway=riverbank`` represents the area occupied by a river.
                 "waterway": "riverbank",
-                "place": ["sea", "ocean"],
+                # ``water`` keys enumerate only inland or man‑made water types.
+                # We intentionally leave out "sea", "ocean", "bay" and
+                # "strait" so that those are handled by the coastline logic.
+                "water": ["lake", "river", "pond", "reservoir", "lagoon", "canal"],
             },
             name="water",
         )
@@ -588,6 +656,28 @@ def create_poster(
             compensated_dist,
             tags={"leisure": "park", "landuse": "grass"},
             name="parks",
+        )
+        pbar.update(1)
+
+        # 5. Fetch Railways
+        pbar.set_description("Downloading railways")
+        railways = fetch_features(
+            point,
+            compensated_dist,
+            tags={
+                "railway": ["rail", "subway", "light_rail", "tram", "narrow_gauge"],
+            },
+            name="railways",
+        )
+        pbar.update(1)
+
+        # 6. Fetch Buildings
+        pbar.set_description("Downloading buildings")
+        buildings = fetch_features(
+            point,
+            compensated_dist,
+            tags={"building": True},
+            name="buildings",
         )
         pbar.update(1)
 
@@ -631,16 +721,97 @@ def create_poster(
         )
         ax.add_patch(sea_rect)
 
-    # Layer -0.5: Landmass (boundary=land_area) - Masses continentales plus foncées
-    if landmass is not None and not landmass.empty:
-        landmass_polys = landmass[landmass.geometry.type.isin(["Polygon", "MultiPolygon"])]
-        if not landmass_polys.empty:
+    # Layer -0.3: OSM Land Polygons - Zones terrestres officielles
+    # Ces polygones proviennent d'OSM et définissent précisément les zones terrestres
+    # vs maritimes dans le monde entier. Cela garantit que seules les vraies zones
+    # terrestres apparaissent en couleur terre, pas les zones maritimes.
+    land_polygons_gdf = load_land_polygons()
+    if land_polygons_gdf is not None:
+        # Extraire les polygones qui intersectent la zone visible (en WGS84)
+        # Convertir crop limits vers WGS84 pour la requête
+        import geopandas as gpd
+        from shapely.geometry import Point as ShapelyPoint
+
+        # Obtenir la bbox en lat/lon (WGS84)
+        # g_proj est en projection métrique, on doit retourner à WGS84
+        x_min, x_max = crop_xlim
+        y_min, y_max = crop_ylim
+
+        # Créer une bbox légèrement agrandie pour être sûr de tout capturer
+        margin = 0.05  # ~5km de marge
+        lon_min, lon_max = point[1] - margin, point[1] + margin
+        lat_min, lat_max = point[0] - margin, point[0] + margin
+
+        print(f"🌍 Extracting land polygons for bbox ({lat_min:.3f}, {lon_min:.3f}) to ({lat_max:.3f}, {lon_max:.3f})")
+        land_subset = land_polygons_gdf.cx[lon_min:lon_max, lat_min:lat_max].copy()
+
+        if not land_subset.empty:
+            print(f"✓ {len(land_subset)} land polygons found in area")
+            # Projeter dans le CRS de la carte
             try:
-                landmass_polys = ox.projection.project_gdf(landmass_polys)
+                land_subset = land_subset.to_crs(g_proj.graph['crs'])
             except Exception:
-                landmass_polys = landmass_polys.to_crs(g_proj.graph['crs'])
-            # Dessiner les masses continentales (couleur plus foncée que bg)
-            landmass_polys.plot(ax=ax, facecolor=THEME.get('landmass', THEME['bg']), edgecolor='none', zorder=-0.5)
+                land_subset = ox.projection.project_gdf(land_subset)
+
+            # Dessiner les zones terrestres
+            land_subset.plot(ax=ax, facecolor=THEME['bg'], edgecolor='none', zorder=-0.3)
+            print(f"🗺️  Rendered {len(land_subset)} land polygons")
+        else:
+            print(f"⚠️  No land polygons in area (likely inland - drawing fallback rectangle)")
+            # Fallback: rectangle terre si pas de land polygons trouvés
+            from matplotlib.patches import Rectangle
+            land_rect = Rectangle(
+                (x_min, y_min),
+                x_max - x_min,
+                y_max - y_min,
+                facecolor=THEME['bg'],
+                edgecolor='none',
+                zorder=-0.3
+            )
+            ax.add_patch(land_rect)
+    else:
+        print(f"⚠️  Land polygons not available, using fallback rectangle")
+        # Fallback: rectangle terre simple
+        from matplotlib.patches import Rectangle
+        x_min, x_max = crop_xlim
+        y_min, y_max = crop_ylim
+        land_rect = Rectangle(
+            (x_min, y_min),
+            x_max - x_min,
+            y_max - y_min,
+            facecolor=THEME['bg'],
+            edgecolor='none',
+            zorder=-0.3
+        )
+        ax.add_patch(land_rect)
+
+    # Layer 0.6: Zones maritimes (boundary=maritime)
+    # Ces polygones marquent explicitement les zones maritimes dans OSM
+    if coastline is not None and not coastline.empty:
+        try:
+            maritime = fetch_features(
+                point,
+                compensated_dist,
+                tags={"boundary": "maritime"},
+                name="maritime_boundaries"
+            )
+            if maritime is not None and not maritime.empty:
+                print(f"🔍 Maritime: {len(maritime)} features, types: {maritime.geometry.type.value_counts().to_dict()}")
+                maritime_polys = maritime[maritime.geometry.type.isin(["Polygon", "MultiPolygon"])].copy()
+                if not maritime_polys.empty:
+                    # Projeter
+                    try:
+                        maritime_polys = ox.projection.project_gdf(maritime_polys)
+                    except Exception:
+                        maritime_polys = maritime_polys.to_crs(g_proj.graph['crs'])
+
+                    # Dessiner les zones maritimes en bleu
+                    maritime_polys.plot(ax=ax, facecolor=THEME['water'], edgecolor='none', zorder=0.6)
+                    print(f"🌊  Rendered {len(maritime_polys)} maritime boundary polygons")
+                else:
+                    print(f"⚠️  Maritime boundaries found but no polygons (likely LineStrings)")
+        except Exception as e:
+            print(f"⚠️  Could not fetch maritime boundaries: {e}")
 
     # Layer 0: Landuse/Landcover (terre) - protège le fond bleu
     if landuse is not None and not landuse.empty:
@@ -653,15 +824,48 @@ def create_poster(
             # Dessiner la terre avec la couleur de fond (bg)
             landuse_polys.plot(ax=ax, facecolor=THEME['bg'], edgecolor='none', zorder=0)
 
+    # Layer 0.4: Buildings (bâtiments)
+    # Dessiner les bâtiments avec une couleur légèrement plus claire que le fond
+    if buildings is not None and not buildings.empty:
+        building_polys = buildings[buildings.geometry.type.isin(["Polygon", "MultiPolygon"])].copy()
+        if not building_polys.empty:
+            try:
+                building_polys = ox.projection.project_gdf(building_polys)
+            except Exception:
+                building_polys = building_polys.to_crs(g_proj.graph['crs'])
+
+            buildings_color = THEME.get('buildings', THEME['bg'])
+            building_polys.plot(ax=ax, facecolor=buildings_color, edgecolor='none', zorder=0.4)
+            print(f"🏢 Rendered {len(building_polys)} buildings")
+
     # Layer 1: Water (mer, océan, rivières, lacs) - même couleur theme['water']
     if water_features is not None and not water_features.empty:
-        water_polys = water_features[water_features.geometry.type.isin(["Polygon", "MultiPolygon"])]
+        # Retain only polygonal geometries
+        water_polys = water_features[water_features.geometry.type.isin(["Polygon", "MultiPolygon"])].copy()
+        print(f"🔍 DEBUG: {len(water_polys)} water polygons before filtering")
+        print(f"🔍 DEBUG: Columns available: {water_polys.columns.tolist()}")
         if not water_polys.empty:
-            try:
-                water_polys = ox.projection.project_gdf(water_polys)
-            except Exception:
-                water_polys = water_polys.to_crs(g_proj.graph['crs'])
-            water_polys.plot(ax=ax, facecolor=THEME['water'], edgecolor='none', zorder=0.5)
+            # Show some examples of what we have
+            for col in ["place", "water", "natural"]:
+                if col in water_polys.columns:
+                    unique_vals = water_polys[col].dropna().unique()[:10]
+                    print(f"🔍 DEBUG: {col} values: {unique_vals.tolist()}")
+
+            # Filter out any large sea/ocean/bay polygons that might have slipped
+            # through.  This guards against tag inconsistencies where a
+            # multipolygon may still carry an undesired water type.
+            for col in ["place", "water", "natural"]:
+                if col in water_polys.columns:
+                    water_polys = water_polys[~water_polys[col].isin([
+                        "sea", "ocean", "bay", "strait"
+                    ])]
+            print(f"🔍 DEBUG: {len(water_polys)} water polygons after filtering")
+            if not water_polys.empty:
+                try:
+                    water_polys = ox.projection.project_gdf(water_polys)
+                except Exception:
+                    water_polys = water_polys.to_crs(g_proj.graph['crs'])
+                water_polys.plot(ax=ax, facecolor=THEME['water'], edgecolor='none', zorder=0.5)
 
     if parks is not None and not parks.empty:
         # Filter to only polygon/multipolygon geometries to avoid point features showing as dots
@@ -693,6 +897,26 @@ def create_poster(
     ax.set_aspect("equal", adjustable="box")
     ax.set_xlim(crop_xlim)
     ax.set_ylim(crop_ylim)
+
+    # Layer 3.5: Railways (voies ferrées)
+    # Dessiner les voies ferrées avec une ligne plus épaisse que les routes
+    if railways is not None and not railways.empty:
+        railway_lines = railways[railways.geometry.type.isin(["LineString", "MultiLineString"])].copy()
+        if not railway_lines.empty:
+            try:
+                railway_lines = ox.projection.project_gdf(railway_lines)
+            except Exception:
+                railway_lines = railway_lines.to_crs(g_proj.graph['crs'])
+
+            # Utiliser la même couleur que les routes primaires, mais plus épais
+            railway_color = THEME.get('road_primary', THEME['text'])
+            railway_lines.plot(
+                ax=ax,
+                color=railway_color,
+                linewidth=1.8,  # Plus épais que les routes
+                zorder=3.5,  # Au-dessus des routes
+            )
+            print(f"🚂 Rendered {len(railway_lines)} railway lines")
 
     # Layer 3: Gradients (Top and Bottom)
     create_gradient_fade(ax, THEME['gradient_color'], location='bottom', zorder=10, height=gradient_height)

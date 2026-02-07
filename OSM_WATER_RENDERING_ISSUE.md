@@ -226,6 +226,76 @@ Zones observées comme "eau bleue" alors qu'elles sont terrestres :
 
 ---
 
-**Merci d'avance pour votre aide !** 🙏
+## ✅ Solution implémentée
 
-Toute suggestion sur l'approche OSM correcte pour gérer ce cas d'usage serait grandement appréciée.
+**Date** : 2026-02-07
+
+Un expert OSM a analysé le problème et identifié la **cause racine** :
+
+### Diagnostic
+
+Notre requête OSM était **trop large** :
+```python
+tags={
+    "natural": ["water", "bay", "strait"],
+    "water": ["sea", "ocean", "bay", "strait", "lake", "river", ...],
+    "place": ["sea", "ocean"],
+}
+```
+
+**Problème identifié :**
+- Ces requêtes retournaient des polygones **ÉNORMES** (Méditerranée entière, baies complètes)
+- Ces polygones massifs étaient dessinés à `zorder=0.5` et recouvraient les zones intérieures non-taguées
+- **Résultat** : zones terrestres sans tag OSM spécifique apparaissaient bleues (couvertes par les polygones de mer)
+
+### Solution (Approche 2 de l'expert)
+
+**Principe** : Limiter la requête d'eau aux **plans d'eau INTÉRIEURS uniquement** (lacs, rivières, canaux)
+
+**Changements implémentés** :
+
+1. **Requête OSM restrictive** (lignes 571-600 dans create_map_poster.py) :
+```python
+tags={
+    "natural": "water",  # Lacs, réservoirs, étangs (inland uniquement)
+    "waterway": "riverbank",  # Surface occupée par rivières
+    "water": ["lake", "river", "pond", "reservoir", "lagoon", "canal"],
+    # ❌ EXCLUS : "sea", "ocean", "bay", "strait"
+}
+```
+
+2. **Filtre défensif** (lignes 678-689) :
+```python
+# Éliminer tout polygone sea/ocean/bay/strait qui aurait pu passer
+for col in ["place", "water", "natural"]:
+    if col in water_polys.columns:
+        water_polys = water_polys[~water_polys[col].isin([
+            "sea", "ocean", "bay", "strait"
+        ])]
+```
+
+3. **Mer gérée par coastline** : Le rectangle bleu (zorder=-1) continue de gérer le rendu des zones côtières
+
+### Référence
+
+Fichier fourni par l'expert : `/home/msgnoki/Téléchargements/create_map_poster.py`
+- Lignes 571-584 : Documentation complète du rationale
+- Lignes 589-600 : Requête water corrigée
+- Lignes 685-689 : Filtre défensif
+
+### Avantages de cette solution
+
+✅ **Pas de fichier externe** : reste autonome (pas besoin de télécharger land-polygons)
+✅ **Queries OSM optimisées** : moins de données téléchargées (exclude sea/ocean/bay/strait)
+✅ **Filtre défensif** : protection contre les incohérences de tags OSM
+✅ **Bien documenté** : commentaires expliquant le rationale
+✅ **Solution validée** : approche recommandée par expert OSM
+
+### Alternatives non retenues
+
+- **Solution 1 (land-polygons)** : nécessite téléchargement fichier ~50MB + maintenance
+- **Solution 3 (polygonize coastlines)** : complexe, lent, fragile avec côtes morcelées
+
+---
+
+**Merci à l'expert OSM pour cette solution ! 🙏**

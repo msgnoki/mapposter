@@ -12,5 +12,6 @@
   "road_tertiary": "#1B7559",
   "road_residential": "#155C46",
   "road_default": "#155C46",
-  "landmass": "#05281f"
+  "landmass": "#05281f",
+  "buildings": "#0a4f3d"
 }
